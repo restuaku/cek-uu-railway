@@ -117,13 +117,30 @@ class SSOCheckerBot:
             # Clear session
             self.context.clear_cookies()
             
-            # Navigate ke halaman SSO
+            # Navigate ke halaman SSO dengan retry
             print(f"[DEBUG] Navigating to sso.uny.ac.id for {email}...")
-            self.page.goto("https://sso.uny.ac.id", timeout=30000)
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    # CRITICAL: pakai domcontentloaded, BUKAN load
+                    # load = tunggu SEMUA resource (gambar, font, css) — sering timeout
+                    # domcontentloaded = cukup tunggu HTML ready — lebih cepat & reliable
+                    self.page.goto(
+                        "https://sso.uny.ac.id",
+                        wait_until="domcontentloaded",
+                        timeout=15000
+                    )
+                    print(f"[DEBUG] Page navigated (attempt {attempt + 1})")
+                    break
+                except Exception as nav_err:
+                    print(f"[DEBUG] Navigation attempt {attempt + 1} failed: {nav_err}")
+                    if attempt == max_retries - 1:
+                        return False, f"Gagal membuka halaman SSO setelah {max_retries} percobaan"
+                    time.sleep(2)
             
-            # Tunggu halaman benar-benar load
+            # Tunggu network idle (optional, jangan error kalau timeout)
             try:
-                self.page.wait_for_load_state("networkidle", timeout=10000)
+                self.page.wait_for_load_state("networkidle", timeout=5000)
             except:
                 pass
             
